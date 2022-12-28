@@ -59,6 +59,7 @@ mod util;
 #[derive(Clone, Copy, Default, Ord, PartialOrd, Eq, PartialEq, Hash)]
 #[cfg_attr(feature = "serde-1", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde-1", serde(transparent))]
+#[repr(transparent)]
 pub struct Id(u32);
 
 impl From<usize> for Id {
@@ -70,6 +71,14 @@ impl From<usize> for Id {
 impl From<Id> for usize {
     fn from(id: Id) -> usize {
         id.0 as usize
+    }
+}
+
+impl std::ops::Add<usize> for Id {
+    type Output = Id;
+
+    fn add(self, rhs: usize) -> Self::Output {
+        Id(self.0 + rhs as u32)
     }
 }
 

@@ -365,6 +365,7 @@ impl LanguageChildren for Id {
 /// If the `serde-1` feature is enabled, this implements
 /// [`serde::Serialize`](https://docs.rs/serde/latest/serde/trait.Serialize.html).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
 pub struct RecExpr<L> {
     nodes: Vec<L>,
 }
@@ -398,6 +399,12 @@ impl<L> From<Vec<L>> for RecExpr<L> {
     }
 }
 
+impl<L> From<RecExpr<L>> for Vec<L> {
+    fn from(expr: RecExpr<L>) -> Self {
+        expr.nodes
+    }
+}
+
 impl<L: Language> RecExpr<L> {
     /// Adds a given enode to this `RecExpr`.
     /// The enode's children `Id`s must refer to elements already in this list.
@@ -409,7 +416,23 @@ impl<L: Language> RecExpr<L> {
             self
         );
         self.nodes.push(node);
-        Id::from(self.nodes.len() - 1)
+        self.last_id()
+    }
+
+    /// Appends a given `RecExpr` to to this `RecExpr`.
+    pub fn append(&mut self, expr: RecExpr<L>) -> (Id, Id) {
+        debug_assert!(!self.nodes.is_empty(), "expr {:?} has no enodes", self);
+        debug_assert!(!expr.nodes.is_empty(), "expr {:?} has no enodes", expr);
+
+        let lid = self.last_id();
+        let off = self.nodes.len();
+
+        for mut node in expr.nodes {
+            node.update_children(|id| id + off);
+            self.nodes.push(node);
+        }
+
+        (lid, self.last_id())
     }
 
     pub(crate) fn compact(mut self) -> Self {
@@ -426,6 +449,13 @@ impl<L: Language> RecExpr<L> {
 
     pub(crate) fn extract(&self, new_root: Id) -> Self {
         self[new_root].build_recexpr(|id| self[id].clone())
+    }
+
+    /// Returns the `Id` referencing the last enode of this `RecExpr`.
+    #[inline]
+    pub fn last_id(&self) -> Id {
+        debug_assert!(!self.nodes.is_empty(), "{:?} has no enodes", self);
+        Id::from(self.nodes.len() - 1)
     }
 
     /// Checks if this expr is a DAG, i.e. doesn't have any back edges
