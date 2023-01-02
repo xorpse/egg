@@ -1,4 +1,4 @@
-use std::ops::{BitOr, Index, IndexMut};
+use std::ops::{BitOr, Index, IndexMut, Deref, DerefMut};
 use std::{cmp::Ordering, convert::TryFrom};
 use std::{
     convert::Infallible,
@@ -390,6 +390,26 @@ impl<L> Default for RecExpr<L> {
 impl<L> AsRef<[L]> for RecExpr<L> {
     fn as_ref(&self) -> &[L] {
         &self.nodes
+    }
+}
+
+impl<L> AsMut<[L]> for RecExpr<L> {
+    fn as_mut(&mut self) -> &mut [L] {
+        &mut self.nodes
+    }
+}
+
+impl<L> Deref for RecExpr<L> {
+    type Target = [L];
+
+    fn deref(&self) -> &Self::Target {
+        &self.nodes
+    }
+}
+
+impl<L> DerefMut for RecExpr<L> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.nodes
     }
 }
 
