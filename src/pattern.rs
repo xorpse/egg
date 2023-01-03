@@ -159,6 +159,12 @@ impl<L: Language> Language for ENodeOrVar<L> {
     }
 }
 
+impl<L: Language> From<L> for ENodeOrVar<L> {
+    fn from(e: L) -> Self {
+        ENodeOrVar::ENode(e)
+    }
+}
+
 impl<L: Language> From<Var> for ENodeOrVar<L> {
     fn from(v: Var) -> Self {
         ENodeOrVar::Var(v)
