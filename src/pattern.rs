@@ -159,6 +159,12 @@ impl<L: Language> Language for ENodeOrVar<L> {
     }
 }
 
+impl<L: Language> From<Var> for ENodeOrVar<L> {
+    fn from(v: Var) -> Self {
+        ENodeOrVar::Var(v)
+    }
+}
+
 impl<L: Language + Display> Display for ENodeOrVar<L> {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
