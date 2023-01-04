@@ -646,11 +646,9 @@ fn check_rules<L, N>(rules: &[&Rewrite<L, N>]) {
 
     name_counts.retain(|_, count: &mut usize| *count > 1);
     if !name_counts.is_empty() {
-        eprintln!("WARNING: Duplicated rule names may affect rule reporting and scheduling.");
         log::warn!("Duplicated rule names may affect rule reporting and scheduling.");
         for (name, &count) in name_counts.iter() {
             assert!(count > 1);
-            eprintln!("Rule '{}' appears {} times", name, count);
             log::warn!("Rule '{}' appears {} times", name, count);
         }
     }
