@@ -313,20 +313,24 @@ impl<L: Language + Display + FromOp> Explanation<L> {
         result
     }
 
+    // for every subterm which is shared in
+    // multiple places, add it to to_let_bind
     fn find_to_let_bind(
         &self,
         term: Rc<TreeTerm<L>>,
         shared: &mut HashSet<*const TreeTerm<L>>,
         to_let_bind: &mut Vec<Rc<TreeTerm<L>>>,
     ) {
-        for proof in &term.child_proofs {
-            for child in proof {
-                self.find_to_let_bind(child.clone(), shared, to_let_bind);
+        if !term.child_proofs.is_empty() {
+            if shared.insert(&*term as *const TreeTerm<L>) {
+                for proof in &term.child_proofs {
+                    for child in proof {
+                        self.find_to_let_bind(child.clone(), shared, to_let_bind);
+                    }
+                }
+            } else {
+                to_let_bind.push(term);
             }
-        }
-
-        if !term.child_proofs.is_empty() && !shared.insert(&*term as *const TreeTerm<L>) {
-            to_let_bind.push(term);
         }
     }
 }
@@ -1592,7 +1596,8 @@ impl<L: Language> Explain<L> {
 
             let parent_parent = distance_memo.parent_distance[usize::from(parent)].0;
             if parent_parent != parent {
-                let new_dist = dist + distance_memo.parent_distance[usize::from(parent)].1;
+                let new_dist =
+                    dist.saturating_add(distance_memo.parent_distance[usize::from(parent)].1);
                 distance_memo.parent_distance[usize::from(enode)] = (parent_parent, new_dist);
             } else {
                 if ancestor == Id::from(usize::MAX) {
@@ -1743,7 +1748,7 @@ impl<L: Language> Explain<L> {
             for other in congruence_neighbors[usize::from(current)].iter() {
                 let next = other;
                 let distance = self.congruence_distance(current, *next, distance_memo);
-                let next_cost = cost_so_far + distance;
+                let next_cost = cost_so_far.saturating_add(distance);
                 todo.push(HeapState {
                     item: Connection {
                         current,
@@ -1816,7 +1821,7 @@ impl<L: Language> Explain<L> {
             if fuel < eclass_size {
                 continue;
             }
-            fuel -= eclass_size;
+            fuel = fuel.saturating_sub(eclass_size);
 
             let (left_connections, right_connections) = self
                 .shortest_path_modulo_congruence(start, end, congruence_neighbors, distance_memo)
