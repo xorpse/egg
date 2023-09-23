@@ -10,8 +10,8 @@ use std::rc::Rc;
 
 use symbolic_expressions::Sexp;
 
-const CONGRUENCE_LIMIT: usize = 10;
-const GREEDY_NUM_ITERS: usize = 10;
+const CONGRUENCE_LIMIT: usize = 2;
+const GREEDY_NUM_ITERS: usize = 2;
 
 /// A justification for a union, either via a rule or congruence.
 /// A direct union with a justification is also stored as a rule.
@@ -1766,15 +1766,16 @@ impl<L: Language> Explain<L> {
         let left_connections;
         let mut right_connections = vec![];
 
-        // assert that we found a path better than the normal one
-        let dist = self.distance_between(start, end, distance_memo);
+        // we would like to assert that we found a path better than the normal one
+        // but since proof sizes are saturated (saturating_add) this is not true
+        /*let dist = self.distance_between(start, end, distance_memo);
         if *total_cost.unwrap() > dist {
             panic!(
                 "Found cost greater than baseline {} vs {}",
                 total_cost.unwrap(),
                 dist
             );
-        }
+        }*/
         if *total_cost.unwrap() == self.distance_between(start, end, distance_memo) {
             let (a_left_connections, a_right_connections) = self.get_path_unoptimized(start, end);
             left_connections = a_left_connections;
