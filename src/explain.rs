@@ -3,12 +3,15 @@ use crate::{
     util::pretty_print, Analysis, EClass, EGraph, ENodeOrVar, FromOp, HashMap, HashSet, Id,
     Language, Pattern, PatternAst, RecExpr, Rewrite, Subst, UnionFind, Var,
 };
+use saturating::Saturating;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, VecDeque};
 use std::fmt::{self, Debug, Display, Formatter};
 use std::rc::Rc;
 
 use symbolic_expressions::Sexp;
+
+type ProofCost = Saturating<usize>;
 
 const CONGRUENCE_LIMIT: usize = 2;
 const GREEDY_NUM_ITERS: usize = 2;
@@ -62,14 +65,15 @@ pub struct Explain<L: Language> {
     // the explanation.
     // Invariant: The distance is always <= the unoptimized distance
     // That is, less than or equal to the result of `distance_between`
-    shortest_explanation_memo: HashMap<(Id, Id), (usize, Id)>,
+    #[cfg_attr(feature = "serde-1", serde(skip))]
+    shortest_explanation_memo: HashMap<(Id, Id), (ProofCost, Id)>,
 }
 
 #[derive(Default)]
 struct DistanceMemo {
-    parent_distance: Vec<(Id, usize)>,
+    parent_distance: Vec<(Id, ProofCost)>,
     common_ancestor: HashMap<(Id, Id), Id>,
-    tree_depth: HashMap<Id, usize>,
+    tree_depth: HashMap<Id, ProofCost>,
 }
 
 /// Explanation trees are the compact representation showing
@@ -233,10 +237,10 @@ impl<L: Language + Display + FromOp> Explanation<L> {
 
     /// Get the size of this explanation tree in terms of the number of rewrites
     /// in the let-bound version of the tree.
-    pub fn get_tree_size(&self) -> usize {
+    pub fn get_tree_size(&self) -> ProofCost {
         let mut seen = Default::default();
         let mut seen_adjacent = Default::default();
-        let mut sum = 0;
+        let mut sum: ProofCost = Saturating(0);
         for e in self.explanation_trees.iter() {
             sum += self.tree_size(&mut seen, &mut seen_adjacent, e);
         }
@@ -248,21 +252,21 @@ impl<L: Language + Display + FromOp> Explanation<L> {
         seen: &mut HashSet<*const TreeTerm<L>>,
         seen_adjacent: &mut HashSet<(Id, Id)>,
         current: &Rc<TreeTerm<L>>,
-    ) -> usize {
+    ) -> ProofCost {
         if !seen.insert(&**current as *const TreeTerm<L>) {
-            return 0;
+            return Saturating(0);
         }
-        let mut my_size = 0;
+        let mut my_size: ProofCost = Saturating(0);
         if current.forward_rule.is_some() {
-            my_size += 1;
+            my_size += Saturating(1);
         }
         if current.backward_rule.is_some() {
-            my_size += 1;
+            my_size += Saturating(1);
         }
-        assert!(my_size <= 1);
-        if my_size == 1 {
+        assert!(my_size <= Saturating(1));
+        if my_size == Saturating(1) {
             if !seen_adjacent.insert((current.current, current.last)) {
-                return 0;
+                return Saturating(0);
             } else {
                 seen_adjacent.insert((current.last, current.current));
             }
@@ -853,7 +857,7 @@ impl<L: Language> FlatTerm<L> {
 // Make sure to use push_increase instead of push when using priority queue
 #[derive(Copy, Clone, Eq, PartialEq)]
 struct HeapState<I> {
-    cost: usize,
+    cost: ProofCost,
     item: I,
 }
 // The priority queue depends on `Ord`.
@@ -879,6 +883,9 @@ impl<I: Eq + PartialEq> PartialOrd for HeapState<I> {
 }
 
 impl<L: Language> Explain<L> {
+    pub(crate) fn node(&self, node_id: Id) -> &L {
+        &self.explainfind[usize::from(node_id)].node
+    }
     fn node_to_explanation(
         &self,
         node_id: Id,
@@ -887,7 +894,7 @@ impl<L: Language> Explain<L> {
         if let Some(existing) = cache.get(&node_id) {
             existing.clone()
         } else {
-            let node = self.explainfind[usize::from(node_id)].node.clone();
+            let node = self.node(node_id).clone();
             let children = node.fold(vec![], |mut sofar, child| {
                 sofar.push(vec![self.node_to_explanation(child, cache)]);
                 sofar
@@ -904,24 +911,20 @@ impl<L: Language> Explain<L> {
         self.node_to_recexpr_internal(&mut res, node_id, &mut cache);
         res
     }
-
     fn node_to_recexpr_internal(
         &self,
         res: &mut RecExpr<L>,
         node_id: Id,
         cache: &mut HashMap<Id, Id>,
     ) {
-        let new_node = self.explainfind[usize::from(node_id)]
-            .node
-            .clone()
-            .map_children(|child| {
-                if let Some(existing) = cache.get(&child) {
-                    *existing
-                } else {
-                    self.node_to_recexpr_internal(res, child, cache);
-                    Id::from(res.as_ref().len() - 1)
-                }
-            });
+        let new_node = self.node(node_id).clone().map_children(|child| {
+            if let Some(existing) = cache.get(&child) {
+                *existing
+            } else {
+                self.node_to_recexpr_internal(res, child, cache);
+                Id::from(res.as_ref().len() - 1)
+            }
+        });
         res.add(new_node);
     }
 
@@ -950,23 +953,20 @@ impl<L: Language> Explain<L> {
             res.add(ENodeOrVar::Var(var));
             subst.insert(var, *existing);
         } else {
-            let new_node = self.explainfind[usize::from(node_id)]
-                .node
-                .clone()
-                .map_children(|child| {
-                    if let Some(existing) = cache.get(&child) {
-                        *existing
-                    } else {
-                        self.node_to_pattern_internal(res, child, var_substitutions, subst, cache);
-                        Id::from(res.as_ref().len() - 1)
-                    }
-                });
+            let new_node = self.node(node_id).clone().map_children(|child| {
+                if let Some(existing) = cache.get(&child) {
+                    *existing
+                } else {
+                    self.node_to_pattern_internal(res, child, var_substitutions, subst, cache);
+                    Id::from(res.as_ref().len() - 1)
+                }
+            });
             res.add(ENodeOrVar::ENode(new_node));
         }
     }
 
     fn node_to_flat_explanation(&self, node_id: Id) -> FlatTerm<L> {
-        let node = self.explainfind[usize::from(node_id)].node.clone();
+        let node = self.node(node_id).clone();
         let children = node.fold(vec![], |mut sofar, child| {
             sofar.push(self.node_to_flat_explanation(child));
             sofar
@@ -1080,7 +1080,7 @@ impl<L: Language> Explain<L> {
             return;
         }
         if let Some((cost, _)) = self.shortest_explanation_memo.get(&(node1, node2)) {
-            if cost <= &1 {
+            if cost <= &Saturating(1) {
                 return;
             }
         }
@@ -1106,9 +1106,9 @@ impl<L: Language> Explain<L> {
             .neighbors
             .push(rconnection);
         self.shortest_explanation_memo
-            .insert((node1, node2), (1, node2));
+            .insert((node1, node2), (Saturating(1), node2));
         self.shortest_explanation_memo
-            .insert((node2, node1), (1, node1));
+            .insert((node2, node1), (Saturating(1), node1));
     }
 
     pub(crate) fn union(
@@ -1119,9 +1119,7 @@ impl<L: Language> Explain<L> {
         new_rhs: bool,
     ) {
         if let Justification::Congruence = justification {
-            assert!(self.explainfind[usize::from(node1)]
-                .node
-                .matches(&self.explainfind[usize::from(node2)].node));
+            assert!(self.node(node1).matches(self.node(node2)));
         }
         if new_rhs {
             self.set_existance_reason(node2, node1)
@@ -1132,9 +1130,9 @@ impl<L: Language> Explain<L> {
 
         if let Justification::Rule(_) = justification {
             self.shortest_explanation_memo
-                .insert((node1, node2), (1, node2));
+                .insert((node1, node2), (Saturating(1), node2));
             self.shortest_explanation_memo
-                .insert((node2, node1), (1, node1));
+                .insert((node2, node1), (Saturating(1), node1));
         }
 
         let pconnection = Connection {
@@ -1413,8 +1411,8 @@ impl<L: Language> Explain<L> {
             }
             Justification::Congruence => {
                 // add the children proofs to the last explanation
-                let current_node = &self.explainfind[usize::from(connection.current)].node;
-                let next_node = &self.explainfind[usize::from(connection.next)].node;
+                let current_node = self.node(connection.current);
+                let next_node = self.node(connection.next);
                 assert!(current_node.matches(next_node));
                 let mut subproofs = vec![];
 
@@ -1455,20 +1453,20 @@ impl<L: Language> Explain<L> {
         enodes
     }
 
-    fn add_tree_depths(&self, node: Id, depths: &mut HashMap<Id, usize>) -> usize {
+    fn add_tree_depths(&self, node: Id, depths: &mut HashMap<Id, ProofCost>) -> ProofCost {
         if depths.get(&node).is_none() {
             let parent = self.parent(node);
             let depth = if parent == node {
-                0
+                Saturating(0)
             } else {
-                self.add_tree_depths(parent, depths) + 1
+                self.add_tree_depths(parent, depths) + Saturating(1)
             };
             depths.insert(node, depth);
         }
         return *depths.get(&node).unwrap();
     }
 
-    fn calculate_tree_depths(&self) -> HashMap<Id, usize> {
+    fn calculate_tree_depths(&self) -> HashMap<Id, ProofCost> {
         let mut depths = HashMap::default();
         for i in 0..self.explainfind.len() {
             self.add_tree_depths(Id::from(i), &mut depths);
@@ -1476,7 +1474,7 @@ impl<L: Language> Explain<L> {
         depths
     }
 
-    fn replace_distance(&mut self, current: Id, next: Id, right: Id, distance: usize) {
+    fn replace_distance(&mut self, current: Id, next: Id, right: Id, distance: ProofCost) {
         self.shortest_explanation_memo
             .insert((current, right), (distance, next));
     }
@@ -1486,11 +1484,9 @@ impl<L: Language> Explain<L> {
         right: Id,
         left_connections: &[Connection],
         distance_memo: &mut DistanceMemo,
-        target_cost: usize,
     ) {
         self.shortest_explanation_memo
-            .insert((right, right), (0, right));
-        let mut last_cost = 0;
+            .insert((right, right), (Saturating(0), right));
         for connection in left_connections.iter().rev() {
             let next = connection.next;
             let current = connection.current;
@@ -1500,15 +1496,18 @@ impl<L: Language> Explain<L> {
                 .unwrap()
                 .0;
             let dist = self.connection_distance(connection, distance_memo);
-            last_cost = dist + next_cost;
             self.replace_distance(current, next, right, next_cost + dist);
         }
-        assert!(last_cost <= target_cost);
     }
 
-    fn distance_between(&mut self, left: Id, right: Id, distance_memo: &mut DistanceMemo) -> usize {
+    fn distance_between(
+        &mut self,
+        left: Id,
+        right: Id,
+        distance_memo: &mut DistanceMemo,
+    ) -> ProofCost {
         if left == right {
-            return 0;
+            return Saturating(0);
         }
         let ancestor = if let Some(a) = distance_memo.common_ancestor.get(&(left, right)) {
             *a
@@ -1535,11 +1534,13 @@ impl<L: Language> Explain<L> {
         );
 
         // calculate distance to find upper bound
-        match b.checked_add(c) {
-            Some(added) => added
-                .checked_sub(a.checked_mul(2).unwrap_or(0))
-                .unwrap_or(usize::MAX),
-            None => usize::MAX,
+        match b.0.checked_add(c.0) {
+            Some(added) => Saturating(
+                added
+                    .checked_sub(a.0.checked_mul(2).unwrap_or(0))
+                    .unwrap_or(usize::MAX),
+            ),
+            None => Saturating(usize::MAX),
         }
 
         //assert_eq!(dist+1, Explanation::new(self.explain_enodes(left, right, &mut Default::default())).make_flat_explanation().len());
@@ -1550,20 +1551,16 @@ impl<L: Language> Explain<L> {
         current: Id,
         next: Id,
         distance_memo: &mut DistanceMemo,
-    ) -> usize {
-        let current_node = self.explainfind[usize::from(current)].node.clone();
-        let next_node = self.explainfind[usize::from(next)].node.clone();
-        let mut cost: usize = 0;
+    ) -> ProofCost {
+        let current_node = self.node(current).clone();
+        let next_node = self.node(next).clone();
+        let mut cost: ProofCost = Saturating(0);
         for (left_child, right_child) in current_node
             .children()
             .iter()
             .zip(next_node.children().iter())
         {
-            cost = cost.saturating_add(self.distance_between(
-                *left_child,
-                *right_child,
-                distance_memo,
-            ));
+            cost += self.distance_between(*left_child, *right_child, distance_memo);
         }
         cost
     }
@@ -1572,12 +1569,12 @@ impl<L: Language> Explain<L> {
         &mut self,
         connection: &Connection,
         distance_memo: &mut DistanceMemo,
-    ) -> usize {
+    ) -> ProofCost {
         match connection.justification {
             Justification::Congruence => {
                 self.congruence_distance(connection.current, connection.next, distance_memo)
             }
-            Justification::Rule(_) => 1,
+            Justification::Rule(_) => Saturating(1),
         }
     }
 
@@ -1586,7 +1583,7 @@ impl<L: Language> Explain<L> {
         enode: Id,
         ancestor: Id,
         distance_memo: &mut DistanceMemo,
-    ) -> usize {
+    ) -> ProofCost {
         loop {
             let parent = distance_memo.parent_distance[usize::from(enode)].0;
             let dist = distance_memo.parent_distance[usize::from(enode)].1;
@@ -1596,8 +1593,7 @@ impl<L: Language> Explain<L> {
 
             let parent_parent = distance_memo.parent_distance[usize::from(parent)].0;
             if parent_parent != parent {
-                let new_dist =
-                    dist.saturating_add(distance_memo.parent_distance[usize::from(parent)].1);
+                let new_dist = dist + distance_memo.parent_distance[usize::from(parent)].1;
                 distance_memo.parent_distance[usize::from(enode)] = (parent_parent, new_dist);
             } else {
                 if ancestor == Id::from(usize::MAX) {
@@ -1617,7 +1613,7 @@ impl<L: Language> Explain<L> {
                     Justification::Congruence => {
                         self.congruence_distance(current, next, distance_memo)
                     }
-                    Justification::Rule(_) => 1,
+                    Justification::Rule(_) => Saturating(1),
                 };
                 distance_memo.parent_distance[usize::from(parent)] = (self.parent(parent), cost);
             }
@@ -1652,8 +1648,8 @@ impl<L: Language> Explain<L> {
             // find all congruence nodes
             let mut cannon_enodes: HashMap<L, Vec<Id>> = Default::default();
             for enode in &enodes {
-                let cannon = self.explainfind[usize::from(*enode)]
-                    .node
+                let cannon = self
+                    .node(*enode)
                     .clone()
                     .map_children(|child| unionfind.find(child));
                 if let Some(others) = cannon_enodes.get_mut(&cannon) {
@@ -1703,7 +1699,7 @@ impl<L: Language> Explain<L> {
     ) -> Option<(Vec<Connection>, Vec<Connection>)> {
         let mut todo = BinaryHeap::new();
         todo.push(HeapState {
-            cost: 0,
+            cost: Saturating(0),
             item: Connection {
                 current: start,
                 next: start,
@@ -1737,7 +1733,7 @@ impl<L: Language> Explain<L> {
 
             for neighbor in &self.explainfind[usize::from(current)].neighbors {
                 if let Justification::Rule(_) = neighbor.justification {
-                    let neighbor_cost = cost_so_far.saturating_add(1);
+                    let neighbor_cost = cost_so_far + Saturating(1);
                     todo.push(HeapState {
                         item: neighbor.clone(),
                         cost: neighbor_cost,
@@ -1748,7 +1744,7 @@ impl<L: Language> Explain<L> {
             for other in congruence_neighbors[usize::from(current)].iter() {
                 let next = other;
                 let distance = self.congruence_distance(current, *next, distance_memo);
-                let next_cost = cost_so_far.saturating_add(distance);
+                let next_cost = cost_so_far + distance;
                 todo.push(HeapState {
                     item: Connection {
                         current,
@@ -1767,7 +1763,7 @@ impl<L: Language> Explain<L> {
         let mut right_connections = vec![];
 
         // we would like to assert that we found a path better than the normal one
-        // but since proof sizes are saturated (saturating_add) this is not true
+        // but since proof sizes are saturated this is not true
         /*let dist = self.distance_between(start, end, distance_memo);
         if *total_cost.unwrap() > dist {
             panic!(
@@ -1776,7 +1772,7 @@ impl<L: Language> Explain<L> {
                 dist
             );
         }*/
-        if *total_cost.unwrap() == self.distance_between(start, end, distance_memo) {
+        if *total_cost.unwrap() >= self.distance_between(start, end, distance_memo) {
             let (a_left_connections, a_right_connections) = self.get_path_unoptimized(start, end);
             left_connections = a_left_connections;
             right_connections = a_right_connections;
@@ -1793,12 +1789,7 @@ impl<L: Language> Explain<L> {
                 }
             }
             connections.reverse();
-            self.populate_path_length(
-                end,
-                &connections,
-                distance_memo,
-                *path_cost.get(&end).unwrap(),
-            );
+            self.populate_path_length(end, &connections, distance_memo);
             left_connections = connections;
         }
 
@@ -1841,8 +1832,8 @@ impl<L: Language> Explain<L> {
                     std::mem::swap(&mut next, &mut current);
                 }
                 if let Justification::Congruence = connection.justification {
-                    let current_node = self.explainfind[usize::from(current)].node.clone();
-                    let next_node = self.explainfind[usize::from(next)].node.clone();
+                    let current_node = self.node(current).clone();
+                    let next_node = self.node(next).clone();
                     for (left_child, right_child) in current_node
                         .children()
                         .iter()
@@ -1906,11 +1897,11 @@ impl<L: Language> Explain<L> {
         for (s_int, others) in congruence_neighbors.iter().enumerate() {
             let start = &Id::from(s_int);
             for other in others {
-                for (left, right) in self.explainfind[usize::from(*start)]
-                    .node
+                for (left, right) in self
+                    .node(*start)
                     .children()
                     .iter()
-                    .zip(self.explainfind[usize::from(*other)].node.children().iter())
+                    .zip(self.node(*other).children().iter())
                 {
                     if left != right {
                         if common_ancestor_queries.get(start).is_none() {
@@ -1974,7 +1965,7 @@ impl<L: Language> Explain<L> {
     ) {
         let mut congruence_neighbors = vec![vec![]; self.explainfind.len()];
         self.find_congruence_neighbors::<N>(classes, &mut congruence_neighbors, unionfind);
-        let mut parent_distance = vec![(Id::from(0), 0); self.explainfind.len()];
+        let mut parent_distance = vec![(Id::from(0), Saturating(0)); self.explainfind.len()];
         for (i, entry) in parent_distance.iter_mut().enumerate() {
             entry.0 = Id::from(i);
         }
@@ -2097,4 +2088,25 @@ mod tests {
 
         egraph.dot().to_dot("target/foo.dot").unwrap();
     }
+}
+
+#[test]
+fn simple_explain_union_trusted() {
+    use crate::SymbolLang;
+    crate::init_logger();
+    let mut egraph = EGraph::new(()).with_explanations_enabled();
+
+    let a = egraph.add_uncanonical(SymbolLang::leaf("a"));
+    let b = egraph.add_uncanonical(SymbolLang::leaf("b"));
+    let c = egraph.add_uncanonical(SymbolLang::leaf("c"));
+    let d = egraph.add_uncanonical(SymbolLang::leaf("d"));
+    egraph.union_trusted(a, b, "a=b");
+    egraph.rebuild();
+    let fa = egraph.add_uncanonical(SymbolLang::new("f", vec![a]));
+    let fb = egraph.add_uncanonical(SymbolLang::new("f", vec![b]));
+    egraph.union_trusted(c, fa, "c=fa");
+    egraph.union_trusted(d, fb, "d=fb");
+    egraph.rebuild();
+    let mut exp = egraph.explain_equivalence(&"c".parse().unwrap(), &"d".parse().unwrap());
+    assert_eq!(exp.make_flat_explanation().len(), 4)
 }
