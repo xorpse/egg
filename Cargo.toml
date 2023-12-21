@@ -9,6 +9,7 @@ name = "egg"
 readme = "README.md"
 repository = "https://github.com/egraphs-good/egg"
 version = "0.9.5"
+rust-version = "1.64"
 
 [dependencies]
 env_logger = { version = "0.10.0", default-features = false }

@@ -123,6 +123,18 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         }
     }
 
+    /// Resets the `EGraph` to a clean state.
+    pub fn clear(&mut self) {
+        self.classes.clear();
+        self.unionfind.clear();
+        self.clean = false;
+        self.explain = None;
+        self.pending.clear();
+        self.memo.clear();
+        self.analysis_pending.clear();
+        self.classes_by_op.clear();
+    }
+
     /// Returns an iterator over the eclasses in the egraph.
     pub fn classes(&self) -> impl ExactSizeIterator<Item = &EClass<L, N::Data>> {
         self.classes.values()

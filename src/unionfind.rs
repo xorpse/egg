@@ -14,6 +14,10 @@ impl UnionFind {
         id
     }
 
+    pub fn clear(&mut self) {
+        self.parents.clear();
+    }
+
     pub fn size(&self) -> usize {
         self.parents.len()
     }
